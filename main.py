@@ -1,30 +1,33 @@
 # btc-cent-forecast-01: 4-hour-ahead BTC (cbBTC/USDC) point forecast.
 #
-# Model: shrunk mean reversion to the trailing 24-hour MEDIAN.
-#   forecast = last + 0.20 * (median(last 1440 closes) - last)
+# Model: shrunk mean reversion to the trailing 24-hour MEAN.
+#   forecast = last + 0.30 * (mean(last 1440 closes) - last)
 #   rounded to the price grid (5 decimals) and clamped to (0, 10_000_000).
 #
-# Why: the score is mean absolute error, so the point forecast should be
-# the conditional median. In this pool's 1-minute closes the 4-hour-ahead
-# return is negatively related to the price's deviation from its trailing
-# 24-hour center (the pool price overshoots its own recent center and
-# drifts back). The window median is that center estimated robustly: this
-# series is step-like (long flat stretches, then ticks), so a few extreme
-# minutes can drag the mean while the median stays on the level the price
-# actually traded at.
+# Why: the score is mean absolute error. In this pool's 1-minute closes
+# the 4-hour-ahead return is negatively related to the price's deviation
+# from its trailing 24-hour center (the pool price overshoots its own
+# recent center and drifts back). The first entry reverted 0.10 to the
+# mean; a walk-forward sweep then favoured the median at 0.20; extending
+# the sweep to stronger shrinkage favours the plain mean at 0.30 -- the
+# mean uses every minute in the window, and at this strength the extra
+# pull outweighs the median's robustness to the series' step ticks.
 #
 # Evidence (walk-forward on the practice series, reconstructed from the
 # six practice cases: 161 forecast origins, 15-minute steps, 240-minute
 # horizon, scored exactly as the kit scores, 100 * |guess - actual|):
-# this model averages 36,805.6 cents vs 38,788.0 for the previous entry
-# (reversion 0.10 to the 24-hour mean) and 41,213.7 for persistence.
-# Per fold (six chronological blocks) it beats the previous entry in
-# five of six folds; the loss is the one strongly trending fold, where
-# every reversion strength does worse. On the five practice checkpoints
-# whose answers the released data contains it is worse (48,939.5 vs
-# 47,891.5) -- five sparse, overlapping points inside the same series;
-# the 161-origin walk-forward is the broader measurement and is what
-# this choice rests on.
+# this model averages 36,033.4 cents vs 36,805.6 for the median-0.20
+# variant it replaces, 38,788.0 for the first entry (mean, 0.10) and
+# 41,213.7 for persistence. Per fold (six chronological blocks) against
+# the median-0.20 variant: 29,919.1 vs 33,268.9; 18,736.4 vs 19,167.2;
+# 33,709.2 vs 36,168.6; 26,553.8 vs 28,183.2; 74,203.0 vs 70,242.2;
+# 33,555.4 vs 34,287.9 -- better in five of six folds; the loss is the
+# one strongly trending fold, where every reversion strength does
+# worse. On the five practice checkpoints whose
+# answers the released data contains it is worse (49,565.3 vs 48,939.5
+# and 47,891.5) -- five sparse, overlapping points inside the same
+# series; the 161-origin walk-forward is the broader measurement and is
+# what this choice rests on.
 #
 # Deterministic: no randomness, no network, stdlib only. Runs in well
 # under a second per case.
@@ -40,7 +43,7 @@ MIN_PRICE = 0.00001
 MAX_PRICE = 9_999_999.99999
 # Trailing window for the center (minutes) and the shrinkage coefficient.
 CENTER_WINDOW = 1440
-REVERSION = 0.20
+REVERSION = 0.30
 
 
 def price5(x):
@@ -48,18 +51,12 @@ def price5(x):
     return round(min(MAX_PRICE, max(MIN_PRICE, x)) * 1e5) / 1e5
 
 
-def window_median(window):
-    """Median of the window, with the exact definition the walk-forward
-    harness measured: the middle value of the sorted window, or the mean
-    of the two middle values when the count is even. Written out instead
-    of statistics.median so the graded definition is pinned in this file
-    and cannot drift with library conventions."""
-    ordered = sorted(window)
-    n = len(ordered)
-    mid = n // 2
-    if n % 2:
-        return ordered[mid]
-    return (ordered[mid - 1] + ordered[mid]) / 2
+def window_mean(window):
+    """Mean of the window, summed with math.fsum so the result is the
+    correctly rounded exact sum divided by the count -- the definition
+    the walk-forward harness measured (its prefix-sum means agree with
+    fsum on every practice case)."""
+    return math.fsum(window) / len(window)
 
 
 def forecast(prices):
@@ -73,7 +70,7 @@ def forecast(prices):
         raise ValueError("market has no finite prices")
     last = clean[-1]
     window = clean[-CENTER_WINDOW:]
-    center = window_median(window)
+    center = window_mean(window)
     raw = last + REVERSION * (center - last)
     # A non-finite result (overflow on pathological inputs) falls back
     # to the last price rather than poisoning the output.
