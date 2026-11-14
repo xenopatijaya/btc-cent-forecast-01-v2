@@ -54,8 +54,15 @@ def forecast(prices):
         raise ValueError("market has no finite prices")
     last = clean[-1]
     window = clean[-MEAN_WINDOW:]
-    mean24 = sum(window) / len(window)
-    return price5(last + REVERSION * (mean24 - last))
+    # fsum keeps the 1440-term mean accurate to the last ulp instead of
+    # accumulating float rounding the way sum() does.
+    mean24 = math.fsum(window) / len(window)
+    raw = last + REVERSION * (mean24 - last)
+    # A non-finite result (overflow on pathological inputs) falls back
+    # to the last price rather than poisoning the output.
+    if not math.isfinite(raw):
+        raw = last
+    return price5(raw)
 
 
 def pick_market(case, name):
